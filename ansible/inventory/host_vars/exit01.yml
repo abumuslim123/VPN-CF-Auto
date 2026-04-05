@@ -1,0 +1,33 @@
+# ============================================================
+# Переменные для exit-ноды 1
+# Секреты шифруйте через: ansible-vault encrypt exit01.yml
+# ============================================================
+
+# Реальный IP сервера (для первого деплоя)
+exit01_real_ip: "CHANGE_ME"
+
+# --- Cloudflare Tunnel ---
+cloudflared_tunnel_id: "CHANGE_ME"
+cloudflared_account_tag: "CHANGE_ME"
+cloudflared_tunnel_secret: "CHANGE_ME"
+
+# Переопределение хостнеймов для этой ноды
+cloudflared_wstunnel_hostname: "vpn1.{{ cf_domain }}"
+cloudflared_xray_hostname: "vpn1-m.{{ cf_domain }}"
+cloudflared_ssh_hostname: "ssh1.{{ cf_domain }}"
+
+# --- AWG ---
+# Сгенерировать: awg genkey
+awg_server_private_key: "CHANGE_ME"
+
+# Клиентские пиры (добавляются скриптом gen-client-config.sh)
+awg_peers: []
+# - name: "phone1"
+#   public_key: "..."
+#   preshared_key: "..."
+#   allowed_ips: "10.8.0.2/32"
+
+# --- Xray ---
+xray_vless_clients: []
+# - id: "uuid-here"
+#   email: "user1@example.com"

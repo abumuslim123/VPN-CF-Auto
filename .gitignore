@@ -1,0 +1,35 @@
+# Секреты
+.env
+*.pem
+*.key
+
+# Ansible vault
+*.vault.yml
+
+# Tunnel credentials
+management/data/tunnels/*.json
+
+# Данные management
+management/data/vpn.db
+management/data/clients/
+
+# Сгенерированные клиентские конфиги
+client/desktop/*.conf
+client/desktop/generated/
+client/mobile/generated/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+.venv/

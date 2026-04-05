@@ -1,0 +1,11 @@
+# Значения по умолчанию для роли firewall
+
+---
+# Безопасность: SSH остаётся открытым при первом деплое.
+# После проверки CF Tunnel установите false и перезапустите:
+#   ansible-playbook playbooks/exit-node.yml --tags firewall
+firewall_allow_ssh_during_setup: true
+firewall_ssh_port: 22
+
+# Проверять работоспособность туннеля перед блокировкой SSH
+firewall_verify_tunnel: true

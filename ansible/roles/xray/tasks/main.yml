@@ -1,0 +1,66 @@
+# Роль xray: VLESS + WebSocket для мобильных клиентов
+# - Установка Xray-core из официального скрипта
+# - VLESS inbound на 127.0.0.1:8443 (WebSocket transport)
+# - Freedom outbound + blackhole для приватных IP
+# - БЕЗ flow: xtls-rprx-vision (несовместимо с WS)
+
+---
+- name: Создать системного пользователя xray
+  user:
+    name: xray
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+- name: Создать каталоги для xray
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: xray
+    group: xray
+    mode: "0755"
+  loop:
+    - /etc/xray
+    - /var/log/xray
+    - /usr/local/share/xray
+
+- name: Проверить наличие xray
+  stat:
+    path: /usr/local/bin/xray
+  register: xray_binary
+
+- name: Скачать скрипт установки Xray
+  get_url:
+    url: https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh
+    dest: /tmp/install-xray.sh
+    mode: "0755"
+  when: not xray_binary.stat.exists
+
+- name: Установить Xray
+  command: bash /tmp/install-xray.sh install
+  when: not xray_binary.stat.exists
+
+- name: Развернуть конфигурацию Xray
+  template:
+    src: config.json.j2
+    dest: /etc/xray/config.json
+    owner: xray
+    group: xray
+    mode: "0600"
+  notify: restart xray
+
+- name: Развернуть systemd unit
+  template:
+    src: xray.service.j2
+    dest: /etc/systemd/system/xray.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart xray
+
+- name: Включить и запустить xray
+  systemd:
+    name: xray
+    state: started
+    enabled: true
+    daemon_reload: true

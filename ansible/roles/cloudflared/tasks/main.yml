@@ -1,0 +1,82 @@
+# Роль cloudflared: Cloudflare Tunnel daemon
+# - Установка из официального apt-репозитория Cloudflare
+# - Конфигурация туннеля с ingress-правилами
+# - Systemd override: запуск после wstunnel и xray
+#
+# Туннель создаётся ЗАРАНЕЕ через cloudflare/setup-tunnels.sh
+# Здесь только деплой credentials и конфига
+
+---
+- name: Добавить GPG-ключ Cloudflare
+  get_url:
+    url: https://pkg.cloudflare.com/cloudflare-main.gpg
+    dest: /usr/share/keyrings/cloudflare-main.gpg
+    mode: "0644"
+
+- name: Добавить apt-репозиторий Cloudflare
+  apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared {{ ansible_distribution_release }} main"
+    state: present
+    filename: cloudflared
+
+- name: Установить cloudflared
+  apt:
+    name: cloudflared
+    state: present
+    update_cache: true
+
+- name: Создать каталог конфигурации
+  file:
+    path: /etc/cloudflared
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Развернуть credentials туннеля
+  template:
+    src: tunnel-credentials.json.j2
+    dest: "/etc/cloudflared/{{ cloudflared_tunnel_id }}.json"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: restart cloudflared
+
+- name: Развернуть конфигурацию туннеля
+  template:
+    src: config.yml.j2
+    dest: /etc/cloudflared/config.yml
+    owner: root
+    group: root
+    mode: "0600"
+  notify: restart cloudflared
+
+- name: Установить cloudflared как systemd-сервис
+  command: cloudflared service install
+  args:
+    creates: /etc/systemd/system/cloudflared.service
+
+- name: Создать каталог для systemd override
+  file:
+    path: /etc/systemd/system/cloudflared.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Развернуть systemd override (зависимости запуска)
+  copy:
+    dest: /etc/systemd/system/cloudflared.service.d/override.conf
+    content: |
+      [Unit]
+      After=awg-quick@{{ awg_interface_name }}.service wstunnel.service xray.service
+      Wants=wstunnel.service xray.service
+    mode: "0644"
+  notify: restart cloudflared
+
+- name: Включить и запустить cloudflared
+  systemd:
+    name: cloudflared
+    state: started
+    enabled: true
+    daemon_reload: true

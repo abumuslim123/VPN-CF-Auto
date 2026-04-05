@@ -1,0 +1,12 @@
+# Значения по умолчанию для роли xray
+
+---
+xray_listen: "127.0.0.1"
+xray_port: 8443
+xray_vless_path: "/vless-ws"
+xray_log_level: "warning"
+
+# Список VLESS-клиентов (задаётся в host_vars)
+xray_vless_clients: []
+# - id: "uuid-here"
+#   email: "user@example.com"

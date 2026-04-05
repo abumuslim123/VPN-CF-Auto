@@ -1,0 +1,72 @@
+# Роль amneziawg: установка и настройка Amnezia WireGuard
+# - Установка из PPA (DKMS модуль ядра + утилиты)
+# - Генерация ключей (если не заданы)
+# - Конфигурация интерфейса awg0
+# - БЕЗ PostUp/PostDown — NAT через nftables в роли firewall
+
+---
+- name: Добавить PPA репозиторий Amnezia
+  apt_repository:
+    repo: "ppa:amnezia/ppa"
+    state: present
+    update_cache: true
+
+- name: Установить AmneziaWG
+  apt:
+    name:
+      - amneziawg
+    state: present
+
+- name: Проверить загрузку модуля ядра
+  modprobe:
+    name: amneziawg
+    state: present
+
+- name: Генерировать приватный ключ сервера (если не задан)
+  command: awg genkey
+  register: generated_private_key
+  when: awg_server_private_key == ""
+  no_log: true
+  changed_when: true
+
+- name: Установить приватный ключ
+  set_fact:
+    _awg_private_key: "{{ awg_server_private_key if awg_server_private_key != '' else generated_private_key.stdout }}"
+  no_log: true
+
+- name: Получить публичный ключ из приватного
+  shell: echo '{{ _awg_private_key }}' | awg pubkey
+  register: awg_pubkey_result
+  changed_when: false
+  no_log: true
+
+- name: Сохранить публичный ключ как факт
+  set_fact:
+    awg_server_public_key: "{{ awg_pubkey_result.stdout }}"
+
+- name: Вывести публичный ключ сервера
+  debug:
+    msg: "AWG Server Public Key: {{ awg_server_public_key }}"
+
+- name: Создать каталог конфигурации
+  file:
+    path: /etc/amnezia/amneziawg
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Развернуть конфигурацию awg0
+  template:
+    src: awg0.conf.j2
+    dest: "/etc/amnezia/amneziawg/{{ awg_interface_name }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: restart amneziawg
+
+- name: Включить и запустить awg-quick
+  systemd:
+    name: "awg-quick@{{ awg_interface_name }}"
+    state: started
+    enabled: true

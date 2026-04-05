@@ -1,0 +1,57 @@
+#!/usr/sbin/nft -f
+# Firewall для VPN exit-ноды
+# Управляется Ansible — не редактировать вручную
+#
+# Политика: DROP ALL INBOUND
+# cloudflared использует ТОЛЬКО исходящие соединения к Cloudflare
+# Все VPN-сервисы слушают на 127.0.0.1
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # Установленные/связанные соединения
+        ct state established,related accept
+
+        # Loopback — обязательно (wstunnel → awg, cloudflared → xray)
+        iif "lo" accept
+
+        # ICMP (ping) — полезно для мониторинга
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+
+{% if firewall_allow_ssh_during_setup %}
+        # ВРЕМЕННО: SSH открыт для первого деплоя
+        # Убрать после проверки CF Tunnel (firewall_allow_ssh_during_setup: false)
+        tcp dport {{ firewall_ssh_port }} accept
+{% endif %}
+
+        # Всё остальное отбрасывается (policy drop)
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+
+        # VPN-трафик: awg0 → интернет
+        iifname "{{ awg_interface_name }}" oifname "{{ main_network_interface }}" accept
+
+        # Обратный трафик: интернет → awg0 (только established)
+        iifname "{{ main_network_interface }}" oifname "{{ awg_interface_name }}" ct state established,related accept
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+        # Все исходящие разрешены (cloudflared, DNS, обновления)
+    }
+}
+
+table inet nat {
+    chain postrouting {
+        type nat hook postrouting priority 100;
+
+        # NAT masquerade для VPN-подсети
+        oifname "{{ main_network_interface }}" ip saddr 10.8.0.0/24 masquerade
+    }
+}

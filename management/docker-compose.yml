@@ -1,0 +1,22 @@
+# Docker Compose — VPN Management (Telegram-бот + мониторинг)
+#
+# Один контейнер: бот + фоновый healthcheck в asyncio.
+#
+# Запуск: docker compose up -d
+# Логи:   docker compose logs -f bot
+# Управление: через Telegram-бот (/start)
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    volumes:
+      - ./data:/data
+      - ./scripts:/app/scripts:ro
+      - ./templates:/app/templates:ro
+    restart: unless-stopped
+    # Python бот с встроенным healthcheck
+    command: ["python", "-m", "bot.main"]

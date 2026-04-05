@@ -1,0 +1,24 @@
+# Значения по умолчанию для роли amneziawg
+# Переопределяются в group_vars/exit_nodes.yml и host_vars/
+
+---
+awg_listen_port: 51820
+awg_interface_address: "10.8.0.1/24"
+awg_interface_name: "awg0"
+
+# Параметры обфускации Amnezia WG
+awg_jc: 4
+awg_jmin: 40
+awg_jmax: 70
+awg_s1: 0
+awg_s2: 0
+awg_h1: 1
+awg_h2: 2
+awg_h3: 3
+awg_h4: 4
+
+# Приватный ключ сервера (ОБЯЗАТЕЛЬНО задать в host_vars)
+awg_server_private_key: ""
+
+# Список клиентских пиров
+awg_peers: []

@@ -1,0 +1,27 @@
+# Systemd unit для wstunnel сервера
+# Управляется Ansible — не редактировать вручную
+#
+# wstunnel v10: сервер слушает WebSocket, клиент указывает forwarding.
+# --restrict-to ограничивает куда можно форвардить (безопасность).
+# ws:// без TLS — шифрование обеспечивает Cloudflare на edge.
+
+[Unit]
+Description=wstunnel WebSocket Tunnel Server
+After=network.target awg-quick@{{ awg_interface_name }}.service
+Requires=awg-quick@{{ awg_interface_name }}.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wstunnel server \
+  --restrict-to {{ wstunnel_restrict_to }} \
+{% if wstunnel_upgrade_path_prefix != "" %}
+  --restrict-http-upgrade-path-prefix "{{ wstunnel_upgrade_path_prefix }}" \
+{% endif %}
+  --websocket-ping-frequency-sec {{ wstunnel_websocket_ping }} \
+  ws://127.0.0.1:{{ wstunnel_listen_port }}
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

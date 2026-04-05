@@ -1,0 +1,9 @@
+# Значения по умолчанию для роли wstunnel
+
+---
+wstunnel_version: "10.1.0"
+wstunnel_listen_port: 8080
+wstunnel_restrict_to: "127.0.0.1:51820"
+wstunnel_websocket_ping: 30
+# Секретный префикс пути WebSocket upgrade (пусто = отключено)
+wstunnel_upgrade_path_prefix: ""

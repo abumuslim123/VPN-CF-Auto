@@ -1,0 +1,55 @@
+{
+  "log": {
+    "loglevel": "{{ xray_log_level }}",
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-ws",
+      "listen": "{{ xray_listen }}",
+      "port": {{ xray_port }},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+{% for client in xray_vless_clients %}
+          {
+            "id": "{{ client.id }}"{% if client.email is defined %},
+            "email": "{{ client.email }}"{% endif %}
+
+          }{% if not loop.last %},{% endif %}
+
+{% endfor %}
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "{{ xray_vless_path }}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "outboundTag": "block",
+        "ip": [
+          "geoip:private"
+        ]
+      }
+    ]
+  }
+}

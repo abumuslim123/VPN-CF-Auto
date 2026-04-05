@@ -1,0 +1,10 @@
+# Значения по умолчанию для роли cloudflared
+
+---
+cloudflared_tunnel_id: ""
+cloudflared_account_tag: ""
+cloudflared_tunnel_secret: ""
+
+cloudflared_wstunnel_hostname: ""
+cloudflared_xray_hostname: ""
+cloudflared_ssh_hostname: ""

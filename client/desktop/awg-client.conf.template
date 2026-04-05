@@ -1,0 +1,28 @@
+# Шаблон конфигурации Amnezia WireGuard для клиента
+# Заполняется скриптом gen-client-config.sh
+#
+# Для ручной настройки замените значения в < >
+
+[Interface]
+PrivateKey = <CLIENT_PRIVATE_KEY>
+Address = <CLIENT_IP>/32
+DNS = 1.1.1.1, 8.8.8.8
+
+# Параметры обфускации (ДОЛЖНЫ совпадать с сервером)
+Jc = 4
+Jmin = 40
+Jmax = 70
+S1 = 0
+S2 = 0
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+
+[Peer]
+PublicKey = <SERVER_PUBLIC_KEY>
+PresharedKey = <PRESHARED_KEY>
+# Endpoint — локальный wstunnel (НЕ прямой IP сервера)
+Endpoint = 127.0.0.1:51820
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25

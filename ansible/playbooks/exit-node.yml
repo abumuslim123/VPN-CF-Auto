@@ -1,0 +1,28 @@
+# Playbook развёртывания exit-ноды
+#
+# Порядок ролей КРИТИЧЕН:
+# 1. common     — базовые пакеты, sysctl, определение интерфейса
+# 2. amneziawg  — WireGuard с обфускацией (должен работать до wstunnel)
+# 3. xray       — VLESS+WS для мобильных (должен работать до cloudflared)
+# 4. wstunnel   — WS→UDP мост (должен работать до cloudflared)
+# 5. cloudflared — туннель к Cloudflare (маршрутизирует к wstunnel + xray)
+# 6. firewall   — ПОСЛЕДНИМ: блокирует все входящие (включая SSH)
+#
+# Первый деплой:
+#   ansible-playbook playbooks/exit-node.yml
+#
+# После проверки туннеля — закрыть SSH:
+#   1. Установить firewall_allow_ssh_during_setup: false в group_vars
+#   2. ansible-playbook playbooks/exit-node.yml --tags firewall
+
+---
+- name: Развёртывание VPN exit-ноды
+  hosts: exit_nodes
+  become: true
+  roles:
+    - { role: common, tags: ['common', 'setup'] }
+    - { role: amneziawg, tags: ['amneziawg', 'vpn', 'setup'] }
+    - { role: xray, tags: ['xray', 'proxy', 'setup'] }
+    - { role: wstunnel, tags: ['wstunnel', 'tunnel', 'setup'] }
+    - { role: cloudflared, tags: ['cloudflared', 'tunnel', 'setup'] }
+    - { role: firewall, tags: ['firewall', 'lockdown'] }

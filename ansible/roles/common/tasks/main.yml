@@ -1,0 +1,65 @@
+# Роль common: базовая настройка сервера
+# - Обновление пакетов
+# - Установка зависимостей
+# - Настройка sysctl (ip_forward, bbr)
+# - Определение основного сетевого интерфейса
+# - Настройка автообновлений
+
+---
+- name: Обновить apt кэш
+  apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Установить базовые пакеты
+  apt:
+    name:
+      - curl
+      - gnupg
+      - software-properties-common
+      - "linux-headers-{{ ansible_kernel }}"
+      - build-essential
+      - dkms
+      - jq
+      - unzip
+      - wget
+      - sqlite3
+      - unattended-upgrades
+      - apt-transport-https
+    state: present
+
+- name: Настроить автообновления безопасности
+  copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    mode: "0644"
+
+- name: Применить sysctl-параметры для VPN
+  template:
+    src: sysctl-vpn.conf.j2
+    dest: /etc/sysctl.d/99-vpn.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload sysctl
+
+- name: Определить основной сетевой интерфейс
+  shell: ip -o -4 route show default | awk '{print $5}' | head -1
+  register: detected_interface
+  changed_when: false
+
+- name: Проверить, что интерфейс определён
+  fail:
+    msg: "Не удалось определить основной сетевой интерфейс. Проверьте IPv4 маршрут по умолчанию."
+  when: detected_interface.stdout == ""
+
+- name: Сохранить имя интерфейса как факт
+  set_fact:
+    main_network_interface: "{{ detected_interface.stdout }}"
+
+- name: Вывести определённый интерфейс
+  debug:
+    msg: "Основной сетевой интерфейс: {{ main_network_interface }}"

@@ -1,0 +1,49 @@
+# ============================================================
+# Общие переменные для всех exit-нод
+# ============================================================
+
+# --- Домен ---
+cf_domain: "example.com"
+
+# --- Amnezia WireGuard ---
+awg_listen_port: 51820
+awg_interface_address: "10.8.0.1/24"
+awg_interface_name: "awg0"
+awg_dns: "1.1.1.1, 1.0.0.1"
+
+# Параметры обфускации (ДОЛЖНЫ совпадать на всех клиентах)
+awg_jc: 4
+awg_jmin: 40
+awg_jmax: 70
+awg_s1: 0
+awg_s2: 0
+awg_h1: 1
+awg_h2: 2
+awg_h3: 3
+awg_h4: 4
+
+# --- wstunnel ---
+wstunnel_version: "10.1.0"
+wstunnel_listen_port: 8080
+wstunnel_restrict_to: "127.0.0.1:51820"
+wstunnel_websocket_ping: 30
+# Секретный префикс пути (опционально, для доп. защиты)
+wstunnel_upgrade_path_prefix: ""
+
+# --- Xray ---
+xray_listen: "127.0.0.1"
+xray_port: 8443
+xray_vless_path: "/vless-ws"
+xray_log_level: "warning"
+
+# --- cloudflared ---
+# Хостнеймы для ingress-маршрутизации
+cloudflared_wstunnel_hostname: "vpn1.{{ cf_domain }}"
+cloudflared_xray_hostname: "vpn1-m.{{ cf_domain }}"
+cloudflared_ssh_hostname: "ssh1.{{ cf_domain }}"
+
+# --- Firewall ---
+# true = SSH остаётся открытым (для первого деплоя)
+# false = полная блокировка (после проверки туннеля)
+firewall_allow_ssh_during_setup: true
+firewall_ssh_port: 22

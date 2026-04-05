@@ -1,0 +1,32 @@
+# Конфигурация Cloudflare Tunnel
+# Управляется Ansible — не редактировать вручную
+#
+# Каждый hostname → свой локальный сервис:
+#   vpn1.example.com   → wstunnel (десктоп AWG)
+#   vpn1-m.example.com → xray (мобильный VLESS)
+#   ssh1.example.com   → SSH (управление)
+
+tunnel: {{ cloudflared_tunnel_id }}
+credentials-file: /etc/cloudflared/{{ cloudflared_tunnel_id }}.json
+
+originRequest:
+  connectTimeout: 30s
+  noHappyEyeballs: true
+
+ingress:
+  # Десктоп AWG — WebSocket → wstunnel
+  - hostname: {{ cloudflared_wstunnel_hostname }}
+    service: http://127.0.0.1:{{ wstunnel_listen_port }}
+
+  # Мобильный VLESS — WebSocket → Xray
+  - hostname: {{ cloudflared_xray_hostname }}
+    service: http://127.0.0.1:{{ xray_port }}
+
+{% if cloudflared_ssh_hostname is defined and cloudflared_ssh_hostname != "" %}
+  # SSH управление через CF Tunnel
+  - hostname: {{ cloudflared_ssh_hostname }}
+    service: ssh://127.0.0.1:22
+{% endif %}
+
+  # Catch-all: 404 для всех остальных запросов
+  - service: http_status:404

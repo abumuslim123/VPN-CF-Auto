@@ -1,0 +1,6 @@
+---
+- name: restart wstunnel
+  systemd:
+    name: wstunnel
+    state: restarted
+    daemon_reload: true

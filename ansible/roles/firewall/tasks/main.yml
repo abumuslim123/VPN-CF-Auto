@@ -1,0 +1,52 @@
+# Роль firewall: nftables — полная блокировка входящих
+#
+# ВСЕ входящие порты закрыты (включая SSH).
+# Сервер доступен ТОЛЬКО через Cloudflare Tunnel.
+#
+# Двухфазный деплой:
+#   Фаза 1: firewall_allow_ssh_during_setup=true (SSH открыт)
+#   Фаза 2: firewall_allow_ssh_during_setup=false (полная блокировка)
+#
+# ВНИМАНИЕ: ошибка в этой роли = потеря доступа к серверу!
+
+---
+- name: Проверить, что cloudflared запущен
+  command: systemctl is-active cloudflared
+  register: cf_status
+  failed_when: cf_status.rc != 0
+  changed_when: false
+
+- name: Проверить информацию о туннеле
+  command: cloudflared tunnel info {{ cloudflared_tunnel_id }}
+  register: tunnel_info
+  failed_when: tunnel_info.rc != 0
+  changed_when: false
+  when: firewall_verify_tunnel
+
+- name: Отключить ufw (конфликтует с nftables)
+  systemd:
+    name: ufw
+    state: stopped
+    enabled: false
+  ignore_errors: true
+
+- name: Установить nftables
+  apt:
+    name: nftables
+    state: present
+
+- name: Развернуть конфигурацию nftables
+  template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "nft -c -f %s"
+  notify: reload nftables
+
+- name: Включить и запустить nftables
+  systemd:
+    name: nftables
+    enabled: true
+    state: started

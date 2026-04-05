@@ -1,0 +1,27 @@
+# Конфигурация Amnezia WireGuard
+# Управляется Ansible — не редактировать вручную
+# NAT masquerade настроен в nftables (роль firewall)
+
+[Interface]
+PrivateKey = {{ _awg_private_key }}
+Address = {{ awg_interface_address }}
+ListenPort = {{ awg_listen_port }}
+Jc = {{ awg_jc }}
+Jmin = {{ awg_jmin }}
+Jmax = {{ awg_jmax }}
+S1 = {{ awg_s1 }}
+S2 = {{ awg_s2 }}
+H1 = {{ awg_h1 }}
+H2 = {{ awg_h2 }}
+H3 = {{ awg_h3 }}
+H4 = {{ awg_h4 }}
+
+{% for peer in awg_peers %}
+[Peer]
+# {{ peer.name }}
+PublicKey = {{ peer.public_key }}
+{% if peer.preshared_key is defined %}
+PresharedKey = {{ peer.preshared_key }}
+{% endif %}
+AllowedIPs = {{ peer.allowed_ips }}
+{% endfor %}
