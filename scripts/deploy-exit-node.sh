@@ -175,9 +175,9 @@ systemctl restart xray
 
 # --- wstunnel ---
 echo "[6/8] Установка wstunnel..."
-WSTUNNEL_VER="10.1.0"
+WSTUNNEL_VER="10.5.2"
 ARCH=$(uname -m)
-if [ "$ARCH" = "x86_64" ]; then WS_ARCH="x86_64"; elif [ "$ARCH" = "aarch64" ]; then WS_ARCH="aarch64"; fi
+if [ "$ARCH" = "x86_64" ]; then WS_ARCH="amd64"; elif [ "$ARCH" = "aarch64" ]; then WS_ARCH="arm64"; fi
 
 if [ ! -f /usr/local/bin/wstunnel ]; then
     curl -fsSL "https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_VER}/wstunnel_${WSTUNNEL_VER}_linux_${WS_ARCH}.tar.gz" \

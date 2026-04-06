@@ -6,7 +6,7 @@
 ---
 - name: Определить архитектуру
   set_fact:
-    wstunnel_arch: "{{ 'x86_64' if ansible_architecture == 'x86_64' else 'aarch64' }}"
+    wstunnel_arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}"
 
 - name: Проверить наличие wstunnel
   stat:
