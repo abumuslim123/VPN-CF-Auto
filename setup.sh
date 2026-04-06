@@ -223,7 +223,16 @@ echo "     Бот и мониторинг запустятся здесь авт
 echo ""
 echo "  Сейчас нужно указать ЗАРУБЕЖНЫЕ серверы — через них"
 echo "  будет выходить VPN-трафик. Минимум один."
-echo "  Для каждого нужен SSH-доступ (root + ключ)."
+echo ""
+
+# Генерация SSH-ключа (если ещё нет)
+if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ ! -f "$HOME/.ssh/id_rsa" ]; then
+    echo "  Генерация SSH-ключа для подключения к серверам..."
+    ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -N "" -q
+    print_ok "SSH-ключ создан: $HOME/.ssh/id_ed25519.pub"
+else
+    print_ok "SSH-ключ уже существует"
+fi
 echo ""
 
 SERVERS=()
@@ -237,22 +246,57 @@ while true; do
     ask "  SSH пользователь" "root" SRV_USER
     ask "  SSH порт" "22" SRV_PORT
     ask "  Страна (DE/FI/NL/...)" "" SRV_COUNTRY
+    ask "  SSH пароль (для копирования ключа, не сохраняется)" "" SRV_PASS
 
-    # Проверка SSH
+    # Копирование SSH-ключа на сервер
+    if [ -n "$SRV_PASS" ]; then
+        echo "  Копирование SSH-ключа на сервер..."
+        if command -v sshpass &>/dev/null; then
+            sshpass -p "$SRV_PASS" ssh-copy-id -o StrictHostKeyChecking=no \
+                -p "$SRV_PORT" "${SRV_USER}@${SRV_HOST}" 2>/dev/null \
+                && print_ok "SSH-ключ скопирован" \
+                || print_warn "Не удалось скопировать ключ через sshpass"
+        else
+            # Без sshpass — ручной способ
+            PUB_KEY=$(cat "$HOME/.ssh/id_ed25519.pub" 2>/dev/null || cat "$HOME/.ssh/id_rsa.pub" 2>/dev/null)
+            if [ -n "$PUB_KEY" ]; then
+                sshpass_alt=$(expect -c "
+                    spawn ssh -o StrictHostKeyChecking=no -p $SRV_PORT ${SRV_USER}@${SRV_HOST} \"mkdir -p ~/.ssh && echo '${PUB_KEY}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo KEY_COPIED\"
+                    expect \"password:\"
+                    send \"${SRV_PASS}\r\"
+                    expect eof
+                " 2>&1 || true)
+                if echo "$sshpass_alt" | grep -q "KEY_COPIED"; then
+                    print_ok "SSH-ключ скопирован"
+                else
+                    print_warn "Не удалось скопировать ключ. Скопируйте вручную: ssh-copy-id -p $SRV_PORT ${SRV_USER}@${SRV_HOST}"
+                fi
+            fi
+        fi
+    fi
+
+    # Проверка SSH по ключу
     echo ""
-    echo "  Проверка SSH-подключения..."
-    SSH_RESULT=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+    echo "  Проверка SSH-подключения (по ключу)..."
+    SSH_RESULT=$(ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=no -o ConnectTimeout=10 \
         -p "$SRV_PORT" "${SRV_USER}@${SRV_HOST}" "echo SSH_OK" 2>&1 || true)
 
     if echo "$SSH_RESULT" | grep -q "SSH_OK"; then
-        print_ok "SSH работает"
+        print_ok "SSH по ключу работает"
     else
-        print_err "SSH недоступен! Проверьте IP и учётные данные."
-        echo "  Убедитесь, что SSH-ключ добавлен (ssh-copy-id ${SRV_USER}@${SRV_HOST})"
-        ask "  Повторить? (y/n)" "y" RETRY
-        if [ "$RETRY" = "y" ]; then
-            SERVER_NUM=$((SERVER_NUM - 1))
-            continue
+        # Попробовать с паролем
+        SSH_RESULT2=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -p "$SRV_PORT" "${SRV_USER}@${SRV_HOST}" "echo SSH_OK" 2>&1 || true)
+        if echo "$SSH_RESULT2" | grep -q "SSH_OK"; then
+            print_warn "SSH работает по паролю, но ключ не настроен. Бот не сможет подключаться."
+            echo "  Выполните: ssh-copy-id -p $SRV_PORT ${SRV_USER}@${SRV_HOST}"
+        else
+            print_err "SSH недоступен! Проверьте IP и учётные данные."
+            ask "  Повторить? (y/n)" "y" RETRY
+            if [ "$RETRY" = "y" ]; then
+                SERVER_NUM=$((SERVER_NUM - 1))
+                continue
+            fi
         fi
     fi
 
@@ -272,15 +316,29 @@ fi  # конец if SKIP_TO_STEP5 = false
 
 print_header "Шаг 5/5: Деплой"
 
-# Если пропустили шаги 1-4, загрузить серверы из БД
+# Если пропустили шаги 1-4, загрузить серверы из БД (через Docker или sqlite3)
 if [ "$SKIP_TO_STEP5" = true ] && [ ${#SERVERS[@]} -eq 0 ]; then
+    echo "  Загружаю серверы из базы данных..."
     DB_FILE="$SCRIPT_DIR/management/data/vpn.db"
-    if [ -f "$DB_FILE" ]; then
-        echo "  Загружаю серверы из базы данных..."
-        while IFS='|' read -r name host user port country; do
-            SERVERS+=("${name}|${host}|${user}|${port}|${country}")
-        done < <(sqlite3 "$DB_FILE" "SELECT name, host, ssh_user, ssh_port, country FROM servers;" 2>/dev/null | tr '|' '|' || true)
+
+    # Попробовать через Docker (если бот запущен)
+    DB_OUTPUT=$(cd "$SCRIPT_DIR/management" && $DOCKER_COMPOSE exec -T bot python3 -c "
+import sqlite3
+db = sqlite3.connect('/data/vpn.db')
+for r in db.execute('SELECT name, host, ssh_user, ssh_port, country FROM servers').fetchall():
+    print('|'.join(str(x) for x in r))
+db.close()
+" 2>/dev/null || true)
+
+    # Fallback на sqlite3
+    if [ -z "$DB_OUTPUT" ] && command -v sqlite3 &>/dev/null && [ -f "$DB_FILE" ]; then
+        DB_OUTPUT=$(sqlite3 "$DB_FILE" "SELECT name || '|' || host || '|' || ssh_user || '|' || ssh_port || '|' || country FROM servers;" 2>/dev/null || true)
     fi
+
+    while IFS='|' read -r name host user port country; do
+        [ -n "$name" ] && SERVERS+=("${name}|${host}|${user}|${port}|${country}")
+    done <<< "$DB_OUTPUT"
+
     if [ ${#SERVERS[@]} -eq 0 ]; then
         echo -e "${RED}Нет серверов для деплоя! Запустите без --step5${NC}"
         exit 1
@@ -327,7 +385,13 @@ for srv_data in "${SERVERS[@]}"; do
         TUNNEL_ID="$EXISTING_TUNNEL"
         # Нужен secret для credentials — если туннель уже есть, берём из БД
         DB_FILE="$SCRIPT_DIR/management/data/vpn.db"
-        TUNNEL_SECRET=$(sqlite3 "$DB_FILE" "SELECT cf_tunnel_secret FROM servers WHERE name='${SRV_NAME}';" 2>/dev/null || true)
+        TUNNEL_SECRET=$(cd "$SCRIPT_DIR/management" && $DOCKER_COMPOSE exec -T bot python3 -c "
+import sqlite3
+db = sqlite3.connect('/data/vpn.db')
+r = db.execute('SELECT cf_tunnel_secret FROM servers WHERE name=?', ('${SRV_NAME}',)).fetchone()
+print(r[0] if r and r[0] else '')
+db.close()
+" 2>/dev/null || true)
         if [ -z "$TUNNEL_SECRET" ]; then
             TUNNEL_SECRET=$(openssl rand -base64 32)
         fi
