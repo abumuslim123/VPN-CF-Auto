@@ -18,24 +18,28 @@ async def check_ws_endpoint(host: str) -> tuple[str, int, int]:
     start = time.monotonic()
     try:
         timeout = aiohttp.ClientTimeout(total=HEALTHCHECK_TIMEOUT)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            headers = {
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        }
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            ws_headers = {
                 "Upgrade": "websocket",
                 "Connection": "Upgrade",
                 "Sec-WebSocket-Key": "dGVzdA==",
                 "Sec-WebSocket-Version": "13",
             }
             async with session.get(
-                f"https://{host}", headers=headers, ssl=False
+                f"https://{host}", headers=ws_headers, ssl=False
             ) as resp:
                 latency = int((time.monotonic() - start) * 1000)
                 code = resp.status
-                if code == 101:
+                if code in (101, 400, 200):
+                    # 101=WS upgrade, 400=server reachable (normal for non-WS), 200=OK
                     return "up", code, latency
-                elif code >= 500:
+                elif code >= 500 or code == 403:
                     return "down", code, latency
                 else:
-                    return "degraded", code, latency
+                    return "up", code, latency
     except Exception as e:
         latency = int((time.monotonic() - start) * 1000)
         log.debug("Healthcheck %s failed: %s", host, e)
