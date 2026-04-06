@@ -9,7 +9,7 @@ RUN apk add --no-cache \
     jq \
     openssl \
     wireguard-tools \
-    qrencode \
+    libqrencode-tools \
     sqlite \
     openssh-client \
     coreutils
