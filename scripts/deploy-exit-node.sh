@@ -2,50 +2,63 @@
 # Скрипт деплоя exit-ноды VPN
 # Запускается УДАЛЁННО на exit-сервере (через SSH)
 #
+# ИДЕМПОТЕНТНЫЙ — можно запускать повторно.
+# Каждый шаг проверяет, нужна ли установка. При ошибке — продолжает дальше.
+#
 # Ожидает переменные окружения:
 #   CF_TUNNEL_ID, CF_CREDENTIALS_JSON
 #   CF_HOSTNAME_DESKTOP, CF_HOSTNAME_MOBILE, CF_HOSTNAME_SSH
 #   AWG_PRIVATE_KEY (опционально — сгенерирует если пусто)
 #   AWG_JC, AWG_JMIN, AWG_JMAX, AWG_S1, AWG_S2, AWG_H1-H4
-#
-# Выход: 0 = успех, 1 = ошибка
 
-set -euo pipefail
+# НЕ используем set -e — ошибки обрабатываем вручную
+set -uo pipefail
+
+ERRORS=0
+
+ok()   { echo "  ✅ $1"; }
+fail() { echo "  ❌ $1"; ERRORS=$((ERRORS + 1)); }
+skip() { echo "  ⏭️  $1 (уже установлено)"; }
 
 echo "========================================="
 echo "  VPN Exit Node — Автоматический деплой"
 echo "========================================="
 echo ""
 
-# --- Проверить, что мы root ---
 if [ "$(id -u)" -ne 0 ]; then
     echo "ОШИБКА: Запустите от root" >&2
     exit 1
 fi
 
-# --- Определить сетевой интерфейс ---
+# ─── 1/8: Сетевой интерфейс ──────────────────────────────
+echo "[1/8] Определение сетевого интерфейса..."
 MAIN_IFACE=$(ip -o -4 route show default | awk '{print $5}' | head -1)
 if [ -z "$MAIN_IFACE" ]; then
-    echo "ОШИБКА: Не удалось определить сетевой интерфейс" >&2
-    exit 1
+    fail "Не удалось определить сетевой интерфейс"
+else
+    ok "Интерфейс: ${MAIN_IFACE}"
 fi
-echo "[1/8] Интерфейс: ${MAIN_IFACE}"
 
-# --- Обновление системы и установка пакетов ---
-echo "[2/8] Обновление системы и установка пакетов..."
+# ─── 2/8: Пакеты ─────────────────────────────────────────
+echo "[2/8] Установка пакетов..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
 
-# Обновить ядро и заголовки до актуальной версии
-apt-get install -y -qq linux-image-generic linux-headers-generic 2>/dev/null || true
-# Установить заголовки для текущего ядра
+# Почистить возможные битые пакеты
+dpkg --configure -a 2>/dev/null || true
+apt-get install -f -y -qq 2>/dev/null || true
+
+apt-get update -qq 2>/dev/null
+
+# Заголовки ядра
 apt-get install -y -qq "linux-headers-$(uname -r)" 2>/dev/null || true
 
+# Базовые пакеты
 apt-get install -y -qq curl gnupg software-properties-common jq \
-    build-essential dkms unzip wget \
-    nftables sqlite3 unattended-upgrades 2>/dev/null
+    build-essential dkms unzip wget nftables sqlite3 unattended-upgrades 2>/dev/null \
+    && ok "Пакеты установлены" \
+    || fail "Некоторые пакеты не установились"
 
-# --- sysctl ---
+# ─── 3/8: sysctl ─────────────────────────────────────────
 echo "[3/8] Настройка ядра..."
 cat > /etc/sysctl.d/99-vpn.conf <<'SYSCTL'
 net.ipv4.ip_forward = 1
@@ -55,49 +68,58 @@ net.ipv4.tcp_congestion_control = bbr
 net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
 SYSCTL
-sysctl --system > /dev/null 2>&1
+sysctl --system > /dev/null 2>&1 \
+    && ok "sysctl применён" \
+    || fail "Ошибка sysctl"
 
-# --- Amnezia WireGuard ---
+# ─── 4/8: Amnezia WireGuard ──────────────────────────────
 echo "[4/8] Установка Amnezia WireGuard..."
-AWG_INSTALLED=false
 
-# Попытка 1: PPA
-add-apt-repository -y ppa:amnezia/ppa > /dev/null 2>&1 || true
-apt-get update -qq
-
-# Почистить битые пакеты если остались от прошлой попытки
-dpkg --configure -a 2>/dev/null || true
-apt-get install -f -y -qq 2>/dev/null || true
-
-if apt-get install -y -qq amneziawg 2>/dev/null; then
-    AWG_INSTALLED=true
-    echo "  AmneziaWG установлен из PPA"
+if command -v awg &>/dev/null; then
+    skip "AmneziaWG"
+elif command -v wg &>/dev/null; then
+    skip "WireGuard (стандартный)"
 else
-    echo "  AmneziaWG DKMS не собрался, чистим..."
+    # Почистить мусор
+    dpkg --remove --force-remove-reinstreq amneziawg amneziawg-dkms 2>/dev/null || true
     dpkg --configure -a 2>/dev/null || true
     apt-get install -f -y -qq 2>/dev/null || true
-    # Удалить сломанный пакет
-    dpkg --remove --force-remove-reinstreq amneziawg amneziawg-dkms 2>/dev/null || true
+
+    # Попытка 1: AmneziaWG PPA
+    add-apt-repository -y ppa:amnezia/ppa > /dev/null 2>&1 || true
+    apt-get update -qq 2>/dev/null
+    if apt-get install -y amneziawg 2>/dev/null; then
+        ok "AmneziaWG установлен из PPA"
+    else
+        # Почистить после неудачи
+        dpkg --remove --force-remove-reinstreq amneziawg amneziawg-dkms 2>/dev/null || true
+        dpkg --configure -a 2>/dev/null || true
+        apt-get install -f -y -qq 2>/dev/null || true
+
+        # Попытка 2: стандартный WireGuard
+        echo "  AmneziaWG не удалось, ставлю стандартный WireGuard..."
+        if apt-get install -y -qq wireguard wireguard-tools 2>/dev/null; then
+            ok "WireGuard установлен (без обфускации Amnezia)"
+        else
+            fail "Не удалось установить ни AWG, ни WG"
+        fi
+    fi
 fi
 
-# Попытка 2: стандартный WireGuard (работает на всех ядрах 5.6+)
-if [ "$AWG_INSTALLED" = false ]; then
-    echo "  Устанавливаю стандартный WireGuard..."
-    apt-get install -y -qq wireguard wireguard-tools 2>/dev/null
-    echo "  ⚠️ Используется WireGuard без обфускации Amnezia"
-    echo "  Для AWG обновите ядро: apt upgrade && reboot, затем переустановите"
-fi
-
-# Генерация ключей если не заданы
-if [ -z "${AWG_PRIVATE_KEY:-}" ]; then
-    AWG_PRIVATE_KEY=$(awg genkey 2>/dev/null || wg genkey)
+# Генерация ключей
+if [ -f /etc/amnezia/amneziawg/server_private.key ]; then
+    AWG_PRIVATE_KEY=$(cat /etc/amnezia/amneziawg/server_private.key)
+    skip "Ключ AWG уже есть"
+else
+    if [ -z "${AWG_PRIVATE_KEY:-}" ]; then
+        AWG_PRIVATE_KEY=$(awg genkey 2>/dev/null || wg genkey)
+    fi
+    mkdir -p /etc/amnezia/amneziawg
+    echo "$AWG_PRIVATE_KEY" > /etc/amnezia/amneziawg/server_private.key
+    chmod 600 /etc/amnezia/amneziawg/server_private.key
 fi
 AWG_PUBLIC_KEY=$(echo "$AWG_PRIVATE_KEY" | awg pubkey 2>/dev/null || echo "$AWG_PRIVATE_KEY" | wg pubkey)
-
-# Сохранить ключи
-mkdir -p /etc/amnezia/amneziawg
-echo "$AWG_PRIVATE_KEY" > /etc/amnezia/amneziawg/server_private.key
-chmod 600 /etc/amnezia/amneziawg/server_private.key
+echo "  AWG Public Key: ${AWG_PUBLIC_KEY}"
 
 # Конфиг AWG
 cat > /etc/amnezia/amneziawg/awg0.conf <<AWGCONF
@@ -117,24 +139,30 @@ H4 = ${AWG_H4:-4}
 AWGCONF
 chmod 600 /etc/amnezia/amneziawg/awg0.conf
 
-# Запустить AWG
-systemctl enable awg-quick@awg0 2>/dev/null || systemctl enable wg-quick@awg0 2>/dev/null
-systemctl restart awg-quick@awg0 2>/dev/null || systemctl restart wg-quick@awg0 2>/dev/null
-echo "  AWG Public Key: ${AWG_PUBLIC_KEY}"
+# Запуск AWG
+systemctl enable awg-quick@awg0 2>/dev/null || systemctl enable wg-quick@awg0 2>/dev/null || true
+systemctl restart awg-quick@awg0 2>/dev/null || systemctl restart wg-quick@awg0 2>/dev/null || true
 
-# --- Xray ---
+# ─── 5/8: Xray ───────────────────────────────────────────
 echo "[5/8] Установка Xray..."
-if [ ! -f /usr/local/bin/xray ]; then
-    curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh | bash -s install > /dev/null 2>&1
+
+if [ -f /usr/local/bin/xray ]; then
+    skip "Xray"
+else
+    if curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh | bash -s install > /dev/null 2>&1; then
+        ok "Xray установлен"
+    else
+        fail "Не удалось установить Xray"
+    fi
 fi
 
-# Создать пользователя
 id xray &>/dev/null || useradd -r -s /usr/sbin/nologin xray
 mkdir -p /etc/xray /var/log/xray
 chown xray:xray /var/log/xray
 
-# Конфиг Xray
-cat > /etc/xray/config.json <<'XRAYCONF'
+# Конфиг (не перезаписываем если уже есть клиенты)
+if [ ! -f /etc/xray/config.json ] || ! jq -e '.inbounds[0].settings.clients | length > 0' /etc/xray/config.json &>/dev/null; then
+    cat > /etc/xray/config.json <<'XRAYCONF'
 {
   "log": {"loglevel": "warning", "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log"},
   "inbounds": [{
@@ -149,10 +177,10 @@ cat > /etc/xray/config.json <<'XRAYCONF'
   "routing": {"rules": [{"type": "field", "outboundTag": "block", "ip": ["geoip:private"]}]}
 }
 XRAYCONF
+fi
 chown xray:xray /etc/xray/config.json
 chmod 600 /etc/xray/config.json
 
-# Systemd unit для Xray
 cat > /etc/systemd/system/xray.service <<'XRAYSVC'
 [Unit]
 Description=Xray VLESS+WebSocket
@@ -170,25 +198,39 @@ WantedBy=multi-user.target
 XRAYSVC
 
 systemctl daemon-reload
-systemctl enable xray
-systemctl restart xray
+systemctl enable xray 2>/dev/null || true
+systemctl restart xray 2>/dev/null || true
 
-# --- wstunnel ---
+# ─── 6/8: wstunnel ───────────────────────────────────────
 echo "[6/8] Установка wstunnel..."
-WSTUNNEL_VER="10.5.2"
-ARCH=$(uname -m)
-if [ "$ARCH" = "x86_64" ]; then WS_ARCH="amd64"; elif [ "$ARCH" = "aarch64" ]; then WS_ARCH="arm64"; fi
 
-if [ ! -f /usr/local/bin/wstunnel ]; then
-    curl -fsSL "https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_VER}/wstunnel_${WSTUNNEL_VER}_linux_${WS_ARCH}.tar.gz" \
-        -o /tmp/wstunnel.tar.gz
-    tar -xzf /tmp/wstunnel.tar.gz -C /usr/local/bin/ wstunnel 2>/dev/null || \
-    tar -xzf /tmp/wstunnel.tar.gz -C /usr/local/bin/ 2>/dev/null
-    chmod +x /usr/local/bin/wstunnel
+if [ -f /usr/local/bin/wstunnel ]; then
+    skip "wstunnel"
+else
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "x86_64" ]; then WS_ARCH="amd64"; else WS_ARCH="arm64"; fi
+
+    # Получить последнюю версию автоматически
+    WSTUNNEL_VER=$(curl -fsSL https://api.github.com/repos/erebe/wstunnel/releases/latest 2>/dev/null | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4 | tr -d 'v')
+    if [ -z "$WSTUNNEL_VER" ]; then
+        WSTUNNEL_VER="10.5.2"  # fallback
+    fi
+    echo "  Версия: ${WSTUNNEL_VER}, архитектура: ${WS_ARCH}"
+
+    DL_URL="https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_VER}/wstunnel_${WSTUNNEL_VER}_linux_${WS_ARCH}.tar.gz"
+    echo "  URL: ${DL_URL}"
+
+    if curl -fsSL "$DL_URL" -o /tmp/wstunnel.tar.gz; then
+        tar -xzf /tmp/wstunnel.tar.gz -C /usr/local/bin/ 2>/dev/null
+        chmod +x /usr/local/bin/wstunnel
+        ok "wstunnel ${WSTUNNEL_VER} установлен"
+    else
+        fail "Не удалось скачать wstunnel"
+    fi
 fi
 
-# Systemd unit для wstunnel
-AWG_SVC=$(systemctl list-unit-files | grep -oP '(awg|wg)-quick@awg0\.service' | head -1)
+# Systemd unit
+AWG_SVC=$(systemctl list-unit-files 2>/dev/null | grep -oP '(awg|wg)-quick@awg0\.service' | head -1 || echo "awg-quick@awg0.service")
 cat > /etc/systemd/system/wstunnel.service <<WSSVC
 [Unit]
 Description=wstunnel WebSocket Tunnel Server
@@ -205,25 +247,30 @@ WantedBy=multi-user.target
 WSSVC
 
 systemctl daemon-reload
-systemctl enable wstunnel
-systemctl restart wstunnel
+systemctl enable wstunnel 2>/dev/null || true
+systemctl restart wstunnel 2>/dev/null || true
 
-# --- cloudflared ---
+# ─── 7/8: cloudflared ────────────────────────────────────
 echo "[7/8] Установка cloudflared и настройка туннеля..."
 
-# Установка cloudflared
-if [ ! -f /usr/local/bin/cloudflared ]; then
-    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$(dpkg --print-architecture)" \
-        -o /usr/local/bin/cloudflared
-    chmod +x /usr/local/bin/cloudflared
+if [ -f /usr/local/bin/cloudflared ]; then
+    skip "cloudflared (бинарник)"
+else
+    CF_DL_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
+    if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_DL_ARCH}" \
+        -o /usr/local/bin/cloudflared; then
+        chmod +x /usr/local/bin/cloudflared
+        ok "cloudflared установлен"
+    else
+        fail "Не удалось скачать cloudflared"
+    fi
 fi
 
-# Credentials
+# Credentials и конфиг (всегда перезаписываем — могут обновиться)
 mkdir -p /etc/cloudflared
 echo "${CF_CREDENTIALS_JSON}" > "/etc/cloudflared/${CF_TUNNEL_ID}.json"
 chmod 600 "/etc/cloudflared/${CF_TUNNEL_ID}.json"
 
-# Конфиг
 cat > /etc/cloudflared/config.yml <<CFCONF
 tunnel: ${CF_TUNNEL_ID}
 credentials-file: /etc/cloudflared/${CF_TUNNEL_ID}.json
@@ -237,8 +284,7 @@ ingress:
   - service: http_status:404
 CFCONF
 
-# Systemd для cloudflared
-cat > /etc/systemd/system/cloudflared.service <<CFSVC
+cat > /etc/systemd/system/cloudflared.service <<'CFSVC'
 [Unit]
 Description=Cloudflare Tunnel
 After=network.target wstunnel.service xray.service
@@ -254,13 +300,12 @@ WantedBy=multi-user.target
 CFSVC
 
 systemctl daemon-reload
-systemctl enable cloudflared
-systemctl restart cloudflared
+systemctl enable cloudflared 2>/dev/null || true
+systemctl restart cloudflared 2>/dev/null || true
 
-# --- Firewall (nftables) ---
+# ─── 8/8: Firewall ───────────────────────────────────────
 echo "[8/8] Настройка firewall..."
 
-# Отключить ufw
 systemctl stop ufw 2>/dev/null || true
 systemctl disable ufw 2>/dev/null || true
 
@@ -274,7 +319,6 @@ table inet filter {
         iif "lo" accept
         ip protocol icmp accept
         ip6 nexthdr icmpv6 accept
-        # SSH временно открыт — закрыть после проверки туннеля
         tcp dport 22 accept
     }
     chain forward {
@@ -294,12 +338,15 @@ table inet nat {
 }
 NFTCONF
 
-nft -c -f /etc/nftables.conf && {
-    systemctl enable nftables
-    systemctl restart nftables
-}
+if nft -c -f /etc/nftables.conf 2>/dev/null; then
+    systemctl enable nftables 2>/dev/null || true
+    systemctl restart nftables 2>/dev/null || true
+    ok "Firewall настроен"
+else
+    fail "Ошибка валидации nftables"
+fi
 
-# --- Проверка ---
+# ─── Итого ────────────────────────────────────────────────
 echo ""
 echo "========================================="
 echo "  Деплой завершён!"
@@ -311,16 +358,14 @@ echo "  Mobile: ${CF_HOSTNAME_MOBILE}"
 echo "  SSH: ${CF_HOSTNAME_SSH}"
 echo ""
 
-# Проверить сервисы
 for svc in cloudflared wstunnel xray; do
-    if systemctl is-active --quiet "$svc"; then
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
         echo "  ✅ ${svc} — работает"
     else
         echo "  ❌ ${svc} — НЕ работает"
     fi
 done
 
-# AWG может быть как awg-quick так и wg-quick
 if systemctl is-active --quiet awg-quick@awg0 2>/dev/null || systemctl is-active --quiet wg-quick@awg0 2>/dev/null; then
     echo "  ✅ awg0 — работает"
 else
@@ -328,4 +373,10 @@ else
 fi
 
 echo ""
-echo "Готово!"
+if [ "$ERRORS" -gt 0 ]; then
+    echo "  ⚠️ Завершено с ${ERRORS} ошибками. Можно запустить повторно."
+    exit 1
+else
+    echo "  ✅ Всё установлено без ошибок!"
+    exit 0
+fi

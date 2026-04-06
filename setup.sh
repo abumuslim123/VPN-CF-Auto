@@ -3,20 +3,16 @@
 #  VPN Infrastructure — Интерактивный Setup Wizard
 # ============================================================
 #
-# Этот скрипт выполняет полную первоначальную настройку:
-#   1. Запрашивает Cloudflare API credentials
-#   2. Запрашивает Telegram Bot данные
-#   3. Генерирует параметры обфускации AWG
-#   4. Для каждого exit-сервера:
-#      - Проверяет SSH-подключение
-#      - Создаёт CF Tunnel
-#      - Разворачивает VPN-сервисы
-#      - Создаёт DNS-записи
-#   5. Запускает management Docker stack с Telegram-ботом
+# ИДЕМПОТЕНТНЫЙ — при повторном запуске загружает сохранённый .env
+# и пропускает уже выполненные шаги (CF, серверы).
 #
-# Запуск: bash setup.sh
+# Запуск:
+#   bash setup.sh          — полный wizard
+#   bash setup.sh --step5  — только деплой (пропустить шаги 1-4)
+#
+# При ошибке: просто запустите заново. Прогресс сохраняется.
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -111,6 +107,29 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     exit 1
 fi
 
+# ─── Загрузить сохранённый прогресс ───────────────────────
+SKIP_TO_STEP5=false
+if [ "${1:-}" = "--step5" ]; then
+    SKIP_TO_STEP5=true
+fi
+
+if [ -f "$ENV_FILE" ]; then
+    echo ""
+    echo -e "${YELLOW}Найден .env от предыдущего запуска.${NC}"
+    set -a; source "$ENV_FILE"; set +a
+
+    if [ "$SKIP_TO_STEP5" = true ]; then
+        echo -e "${GREEN}Пропускаю шаги 1-4, переходу к деплою...${NC}"
+    else
+        ask "Использовать сохранённые настройки? (y/n)" "y" USE_SAVED
+        if [ "$USE_SAVED" = "y" ] || [ "$USE_SAVED" = "Y" ]; then
+            SKIP_TO_STEP5=true
+            echo -e "${GREEN}Загружено из .env, переходу к деплою...${NC}"
+        fi
+    fi
+fi
+
+if [ "$SKIP_TO_STEP5" = false ]; then
 # ─── Шаг 1: Cloudflare ────────────────────────────────────
 
 print_header "Шаг 1/5: Cloudflare"
@@ -247,9 +266,27 @@ while true; do
     echo ""
 done
 
+fi  # конец if SKIP_TO_STEP5 = false
+
 # ─── Шаг 5: Деплой ────────────────────────────────────────
 
 print_header "Шаг 5/5: Деплой"
+
+# Если пропустили шаги 1-4, загрузить серверы из БД
+if [ "$SKIP_TO_STEP5" = true ] && [ ${#SERVERS[@]} -eq 0 ]; then
+    DB_FILE="$SCRIPT_DIR/management/data/vpn.db"
+    if [ -f "$DB_FILE" ]; then
+        echo "  Загружаю серверы из базы данных..."
+        while IFS='|' read -r name host user port country; do
+            SERVERS+=("${name}|${host}|${user}|${port}|${country}")
+        done < <(sqlite3 "$DB_FILE" "SELECT name, host, ssh_user, ssh_port, country FROM servers;" 2>/dev/null | tr '|' '|' || true)
+    fi
+    if [ ${#SERVERS[@]} -eq 0 ]; then
+        echo -e "${RED}Нет серверов для деплоя! Запустите без --step5${NC}"
+        exit 1
+    fi
+fi
+
 echo "  Серверов для деплоя: ${#SERVERS[@]}"
 echo ""
 
@@ -277,22 +314,40 @@ for srv_data in "${SERVERS[@]}"; do
     echo ""
     echo -e "${BOLD}--- Деплой: ${SRV_NAME} (${SRV_HOST}) ---${NC}"
 
-    # Создать CF Tunnel
-    print_step "1/4" "Создание Cloudflare Tunnel..."
-    TUNNEL_SECRET=$(openssl rand -base64 32)
-    TUNNEL_RESP=$(curl -s -X POST \
-        "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel" \
-        -H "Authorization: Bearer ${CF_API_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "{\"name\":\"vpn-${SRV_NAME}\",\"tunnel_secret\":\"${TUNNEL_SECRET}\"}")
+    # Создать CF Tunnel (или найти существующий)
+    print_step "1/4" "Cloudflare Tunnel..."
 
-    TUNNEL_ID=$(echo "$TUNNEL_RESP" | jq -r '.result.id // empty')
-    if [ -z "$TUNNEL_ID" ]; then
-        print_err "Не удалось создать туннель"
-        echo "$TUNNEL_RESP" | jq '.errors' 2>/dev/null
-        continue
+    # Проверить, есть ли туннель уже (по имени)
+    EXISTING_TUNNEL=$(curl -s \
+        "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?name=vpn-${SRV_NAME}&is_deleted=false" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" 2>/dev/null \
+        | jq -r '.result[0].id // empty' 2>/dev/null || true)
+
+    if [ -n "$EXISTING_TUNNEL" ]; then
+        TUNNEL_ID="$EXISTING_TUNNEL"
+        # Нужен secret для credentials — если туннель уже есть, берём из БД
+        DB_FILE="$SCRIPT_DIR/management/data/vpn.db"
+        TUNNEL_SECRET=$(sqlite3 "$DB_FILE" "SELECT cf_tunnel_secret FROM servers WHERE name='${SRV_NAME}';" 2>/dev/null || true)
+        if [ -z "$TUNNEL_SECRET" ]; then
+            TUNNEL_SECRET=$(openssl rand -base64 32)
+        fi
+        print_ok "Tunnel уже существует: ${TUNNEL_ID}"
+    else
+        TUNNEL_SECRET=$(openssl rand -base64 32)
+        TUNNEL_RESP=$(curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\":\"vpn-${SRV_NAME}\",\"tunnel_secret\":\"${TUNNEL_SECRET}\"}")
+
+        TUNNEL_ID=$(echo "$TUNNEL_RESP" | jq -r '.result.id // empty')
+        if [ -z "$TUNNEL_ID" ]; then
+            print_err "Не удалось создать туннель"
+            echo "$TUNNEL_RESP" | jq '.errors' 2>/dev/null
+            continue
+        fi
+        print_ok "Tunnel создан: ${TUNNEL_ID}"
     fi
-    print_ok "Tunnel ID: ${TUNNEL_ID}"
     TUNNEL_IDS+=("$TUNNEL_ID")
 
     CREDENTIALS_JSON="{\"AccountTag\":\"${CF_ACCOUNT_ID}\",\"TunnelSecret\":\"${TUNNEL_SECRET}\",\"TunnelID\":\"${TUNNEL_ID}\"}"
