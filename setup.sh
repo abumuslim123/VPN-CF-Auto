@@ -211,7 +211,7 @@ SERVERS=()
 SERVER_NUM=0
 
 while true; do
-    ((SERVER_NUM++))
+    SERVER_NUM=$((SERVER_NUM + 1))
     echo -e "${BOLD}--- Зарубежный сервер ${SERVER_NUM} ---${NC}"
     ask "  Имя (латиница, напр. europe-1)" "" SRV_NAME
     ask "  IP-адрес сервера за рубежом" "" SRV_HOST
@@ -222,15 +222,17 @@ while true; do
     # Проверка SSH
     echo ""
     echo "  Проверка SSH-подключения..."
-    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-        -p "$SRV_PORT" "${SRV_USER}@${SRV_HOST}" "echo SSH_OK" 2>/dev/null | grep -q SSH_OK; then
+    SSH_RESULT=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+        -p "$SRV_PORT" "${SRV_USER}@${SRV_HOST}" "echo SSH_OK" 2>&1 || true)
+
+    if echo "$SSH_RESULT" | grep -q "SSH_OK"; then
         print_ok "SSH работает"
     else
         print_err "SSH недоступен! Проверьте IP и учётные данные."
         echo "  Убедитесь, что SSH-ключ добавлен (ssh-copy-id ${SRV_USER}@${SRV_HOST})"
         ask "  Повторить? (y/n)" "y" RETRY
         if [ "$RETRY" = "y" ]; then
-            ((SERVER_NUM--))
+            SERVER_NUM=$((SERVER_NUM - 1))
             continue
         fi
     fi
@@ -269,7 +271,7 @@ NODE_IDX=0
 TUNNEL_IDS=()
 
 for srv_data in "${SERVERS[@]}"; do
-    ((NODE_IDX++))
+    NODE_IDX=$((NODE_IDX + 1))
     IFS='|' read -r SRV_NAME SRV_HOST SRV_USER SRV_PORT SRV_COUNTRY <<< "$srv_data"
 
     echo ""
@@ -450,7 +452,7 @@ DBSCHEMA
 
 NODE_IDX=0
 for srv_data in "${SERVERS[@]}"; do
-    ((NODE_IDX++))
+    NODE_IDX=$((NODE_IDX + 1))
     IFS='|' read -r SRV_NAME SRV_HOST SRV_USER SRV_PORT SRV_COUNTRY <<< "$srv_data"
     TUNNEL_ID="${TUNNEL_IDS[$((NODE_IDX-1))]}"
 
