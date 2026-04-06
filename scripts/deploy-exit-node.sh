@@ -32,11 +32,17 @@ fi
 echo "[1/8] Интерфейс: ${MAIN_IFACE}"
 
 # --- Обновление системы и установка пакетов ---
-echo "[2/8] Установка пакетов..."
+echo "[2/8] Обновление системы и установка пакетов..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
+
+# Обновить ядро и заголовки до актуальной версии
+apt-get install -y -qq linux-image-generic linux-headers-generic 2>/dev/null || true
+# Установить заголовки для текущего ядра
+apt-get install -y -qq "linux-headers-$(uname -r)" 2>/dev/null || true
+
 apt-get install -y -qq curl gnupg software-properties-common jq \
-    "linux-headers-$(uname -r)" build-essential dkms unzip wget \
+    build-essential dkms unzip wget \
     nftables sqlite3 unattended-upgrades 2>/dev/null
 
 # --- sysctl ---
@@ -53,12 +59,34 @@ sysctl --system > /dev/null 2>&1
 
 # --- Amnezia WireGuard ---
 echo "[4/8] Установка Amnezia WireGuard..."
+AWG_INSTALLED=false
+
+# Попытка 1: PPA
 add-apt-repository -y ppa:amnezia/ppa > /dev/null 2>&1 || true
 apt-get update -qq
-apt-get install -y -qq amneziawg 2>/dev/null || {
-    echo "  PPA недоступен, пробую wireguard..."
-    apt-get install -y -qq wireguard 2>/dev/null
-}
+
+# Почистить битые пакеты если остались от прошлой попытки
+dpkg --configure -a 2>/dev/null || true
+apt-get install -f -y -qq 2>/dev/null || true
+
+if apt-get install -y -qq amneziawg 2>/dev/null; then
+    AWG_INSTALLED=true
+    echo "  AmneziaWG установлен из PPA"
+else
+    echo "  AmneziaWG DKMS не собрался, чистим..."
+    dpkg --configure -a 2>/dev/null || true
+    apt-get install -f -y -qq 2>/dev/null || true
+    # Удалить сломанный пакет
+    dpkg --remove --force-remove-reinstreq amneziawg amneziawg-dkms 2>/dev/null || true
+fi
+
+# Попытка 2: стандартный WireGuard (работает на всех ядрах 5.6+)
+if [ "$AWG_INSTALLED" = false ]; then
+    echo "  Устанавливаю стандартный WireGuard..."
+    apt-get install -y -qq wireguard wireguard-tools 2>/dev/null
+    echo "  ⚠️ Используется WireGuard без обфускации Amnezia"
+    echo "  Для AWG обновите ядро: apt upgrade && reboot, затем переустановите"
+fi
 
 # Генерация ключей если не заданы
 if [ -z "${AWG_PRIVATE_KEY:-}" ]; then
