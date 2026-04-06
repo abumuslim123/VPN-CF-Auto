@@ -207,13 +207,13 @@ async def _create_mobile(
     via_tunnel = bool(server["hostname_ssh"])
 
     add_xray_cmd = (
-        f"sudo cp /etc/xray/config.json /etc/xray/config.json.bak && "
+        f"sudo cp /usr/local/etc/xray/config.json /usr/local/etc/xray/config.json.bak && "
         f"sudo jq --arg id '{vless_uuid}' --arg email '{name}@vpn' "
         f"'.inbounds[0].settings.clients += [{{\"id\": $id, \"email\": $email}}]' "
-        f"/etc/xray/config.json > /tmp/xray-new.json && "
+        f"/usr/local/etc/xray/config.json > /tmp/xray-new.json && "
         f"jq . /tmp/xray-new.json > /dev/null 2>&1 && "
-        f"sudo mv /tmp/xray-new.json /etc/xray/config.json && "
-        f"sudo chown xray:xray /etc/xray/config.json && "
+        f"sudo mv /tmp/xray-new.json /usr/local/etc/xray/config.json && "
+        f"sudo chmod 644 /usr/local/etc/xray/config.json && "
         f"sudo systemctl restart xray"
     )
     rc, out, err = await ssh.run_ssh(
@@ -281,8 +281,8 @@ async def revoke_client_on_server(client_id: int):
         cmd = (
             f"sudo jq 'del(.inbounds[0].settings.clients[] | "
             f"select(.id == \"{client['vless_uuid']}\"))' "
-            f"/etc/xray/config.json > /tmp/xray-new.json && "
-            f"sudo mv /tmp/xray-new.json /etc/xray/config.json && "
+            f"/usr/local/etc/xray/config.json > /tmp/xray-new.json && "
+            f"sudo mv /tmp/xray-new.json /usr/local/etc/xray/config.json && "
             f"sudo systemctl restart xray"
         )
         await ssh.run_ssh(host, cmd, server["ssh_user"], server.get("ssh_port", 22),

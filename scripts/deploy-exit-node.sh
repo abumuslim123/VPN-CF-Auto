@@ -43,6 +43,27 @@ fi
 echo "[2/8] Установка пакетов..."
 export DEBIAN_FRONTEND=noninteractive
 
+# Убить сторонние сервисы, которые могут занимать наши порты
+echo "  Проверка конфликтующих сервисов..."
+for relay_svc in $(systemctl list-unit-files --type=service | grep -oP 'relay-\S+\.service' || true); do
+    echo "  Удаляю сторонний сервис: ${relay_svc}"
+    systemctl stop "$relay_svc" 2>/dev/null || true
+    systemctl disable "$relay_svc" 2>/dev/null || true
+    rm -f "/etc/systemd/system/${relay_svc}" 2>/dev/null || true
+done
+# Убить любой socat, занимающий наши порты (8080, 8443, 51820)
+for port in 8080 8443 51820; do
+    PID=$(ss -tlnp | grep ":${port}" | grep -oP 'pid=\K[0-9]+' || true)
+    if [ -n "$PID" ]; then
+        PROC=$(ps -p "$PID" -o comm= 2>/dev/null || true)
+        if [ "$PROC" != "xray" ] && [ "$PROC" != "wstunnel" ]; then
+            echo "  Убиваю ${PROC} (pid ${PID}) на порту ${port}"
+            kill "$PID" 2>/dev/null || true
+        fi
+    fi
+done
+systemctl daemon-reload 2>/dev/null || true
+
 # Почистить возможные битые пакеты
 dpkg --configure -a 2>/dev/null || true
 apt-get install -f -y -qq 2>/dev/null || true
@@ -160,9 +181,13 @@ id xray &>/dev/null || useradd -r -s /usr/sbin/nologin xray
 mkdir -p /etc/xray /var/log/xray
 chown xray:xray /var/log/xray
 
+# Xray использует /usr/local/etc/xray/ (стандартный путь установщика)
+XRAY_CONF_DIR="/usr/local/etc/xray"
+mkdir -p "$XRAY_CONF_DIR"
+
 # Конфиг (не перезаписываем если уже есть клиенты)
-if [ ! -f /etc/xray/config.json ] || ! jq -e '.inbounds[0].settings.clients | length > 0' /etc/xray/config.json &>/dev/null; then
-    cat > /etc/xray/config.json <<'XRAYCONF'
+if [ ! -f "${XRAY_CONF_DIR}/config.json" ] || ! jq -e '.inbounds[0].settings.clients | length > 0' "${XRAY_CONF_DIR}/config.json" &>/dev/null; then
+    cat > "${XRAY_CONF_DIR}/config.json" <<'XRAYCONF'
 {
   "log": {"loglevel": "warning", "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log"},
   "inbounds": [{
@@ -178,18 +203,23 @@ if [ ! -f /etc/xray/config.json ] || ! jq -e '.inbounds[0].settings.clients | le
 }
 XRAYCONF
 fi
-chown xray:xray /etc/xray/config.json
-chmod 600 /etc/xray/config.json
+chmod 644 "${XRAY_CONF_DIR}/config.json"
+# Симлинк для совместимости (бот ищет в /etc/xray/)
+mkdir -p /etc/xray
+ln -sf "${XRAY_CONF_DIR}/config.json" /etc/xray/config.json 2>/dev/null || \
+    cp "${XRAY_CONF_DIR}/config.json" /etc/xray/config.json
 
+# Удалить override от установщика Xray (он ломает наш unit)
+rm -rf /etc/systemd/system/xray.service.d 2>/dev/null || true
+
+# Systemd unit — запуск от root, конфиг из стандартного пути
 cat > /etc/systemd/system/xray.service <<'XRAYSVC'
 [Unit]
 Description=Xray VLESS+WebSocket
 After=network.target
 [Service]
 Type=simple
-User=xray
-Group=xray
-ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
