@@ -100,8 +100,9 @@ async def _create_desktop(
         await db_conn.close()
 
     # Добавить пир на exit-ноде
-    host = server["hostname_ssh"] or server["host"]
-    via_tunnel = bool(server["hostname_ssh"])
+    # Прямой SSH по IP (надёжнее, чем через CF Tunnel)
+    host = server["host"]
+    via_tunnel = False
 
     add_peer_cmd = (
         f"sudo awg set awg0 peer {pubkey} preshared-key <(echo '{psk}') allowed-ips {client_ip}/32 && "
@@ -203,8 +204,9 @@ async def _create_mobile(
         await db_conn.close()
 
     # Добавить клиента в Xray на exit-ноде
-    host = server["hostname_ssh"] or server["host"]
-    via_tunnel = bool(server["hostname_ssh"])
+    # Прямой SSH по IP (надёжнее, чем через CF Tunnel)
+    host = server["host"]
+    via_tunnel = False
 
     add_xray_cmd = (
         f"sudo cp /usr/local/etc/xray/config.json /usr/local/etc/xray/config.json.bak && "
@@ -267,8 +269,9 @@ async def revoke_client_on_server(client_id: int):
         await db.revoke_client(client_id)
         return
 
-    host = server["hostname_ssh"] or server["host"]
-    via_tunnel = bool(server["hostname_ssh"])
+    # Прямой SSH по IP (надёжнее, чем через CF Tunnel)
+    host = server["host"]
+    via_tunnel = False
 
     # Удалить AWG peer
     if client["awg_pubkey"]:

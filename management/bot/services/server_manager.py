@@ -160,8 +160,9 @@ async def restart_services(server_id: int, service: str = "all") -> tuple[bool, 
         return False, "Сервер не найден"
 
     # Используем SSH через CF Tunnel если есть hostname, иначе напрямую
-    host = server["hostname_ssh"] or server["host"]
-    via_tunnel = bool(server["hostname_ssh"])
+    # Прямой SSH по IP
+    host = server["host"]
+    via_tunnel = False
 
     if service == "all":
         cmd = "sudo systemctl restart cloudflared wstunnel xray awg-quick@awg0"
@@ -199,8 +200,9 @@ async def rotate_domain(server_id: int, rotate_type: str) -> dict:
         await db.update_server(server_id, hostname_mobile=new_host)
 
     # Обновить cloudflared ingress на сервере
-    host = server["hostname_ssh"] or server["host"]
-    via_tunnel = bool(server["hostname_ssh"])
+    # Прямой SSH по IP
+    host = server["host"]
+    via_tunnel = False
 
     # Собрать новый ingress
     srv = await db.get_server(server_id)  # перечитать с обновлёнными хостами

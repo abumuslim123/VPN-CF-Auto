@@ -17,6 +17,7 @@ services:
       - ./data:/data
       - ./scripts:/app/scripts:ro
       - ./templates:/app/templates:ro
+      - ~/.ssh:/root/.ssh:ro
     restart: unless-stopped
     # Python бот с встроенным healthcheck
     command: ["python", "-m", "bot.main"]
