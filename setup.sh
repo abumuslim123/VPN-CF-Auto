@@ -467,43 +467,20 @@ ENVFILE
 chmod 600 "$ENV_FILE"
 print_ok ".env сохранён"
 
-# 5.4. Инициализировать БД с серверами
+# 5.4. Запуск Docker (сначала — чтобы использовать sqlite внутри контейнера)
 echo ""
-echo "  Инициализация базы данных..."
+echo "  Сборка и запуск Docker..."
 mkdir -p "$SCRIPT_DIR/management/data"
+cd "$SCRIPT_DIR/management"
+$DOCKER_COMPOSE build 2>&1 | tail -3
+$DOCKER_COMPOSE up -d 2>&1
 
-DB_FILE="$SCRIPT_DIR/management/data/vpn.db"
-sqlite3 "$DB_FILE" <<'DBSCHEMA'
-CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS servers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
-    host TEXT NOT NULL, ssh_user TEXT NOT NULL DEFAULT 'root',
-    ssh_port INTEGER NOT NULL DEFAULT 22, country TEXT DEFAULT '',
-    cf_tunnel_id TEXT, cf_tunnel_secret TEXT, cf_account_tag TEXT,
-    hostname_desktop TEXT, hostname_mobile TEXT, hostname_ssh TEXT,
-    awg_private_key TEXT, awg_public_key TEXT,
-    status TEXT NOT NULL DEFAULT 'pending', max_clients INTEGER DEFAULT 253,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    deployed_at TEXT, error_msg TEXT
-);
-CREATE TABLE IF NOT EXISTS clients (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
-    type TEXT NOT NULL, server_id INTEGER NOT NULL REFERENCES servers(id),
-    awg_ip TEXT, awg_privkey TEXT, awg_pubkey TEXT, awg_psk TEXT,
-    vless_uuid TEXT, active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')), revoked_at TEXT
-);
-CREATE TABLE IF NOT EXISTS ip_pool (
-    server_id INTEGER NOT NULL, ip TEXT NOT NULL, client_id INTEGER,
-    allocated INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (server_id, ip)
-);
-CREATE TABLE IF NOT EXISTS health_checks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, server_id INTEGER NOT NULL,
-    protocol TEXT NOT NULL, status TEXT NOT NULL,
-    http_code INTEGER, latency_ms INTEGER, error TEXT,
-    checked_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-DBSCHEMA
+# Подождать запуска бота (он инициализирует БД)
+echo "  Ожидание инициализации бота..."
+sleep 5
+
+# 5.5. Добавить серверы в БД через Docker (sqlite3 может не быть на хосте)
+echo "  Добавление серверов в базу данных..."
 
 NODE_IDX=0
 for srv_data in "${SERVERS[@]}"; do
@@ -515,32 +492,39 @@ for srv_data in "${SERVERS[@]}"; do
     HOSTNAME_MOBILE="vpn${NODE_IDX}-m.${CF_DOMAIN}"
     HOSTNAME_SSH="ssh${NODE_IDX}.${CF_DOMAIN}"
 
-    # Получить ключи с сервера
+    # Получить ключи с exit-ноды
     AWG_PRIV=$(ssh -o StrictHostKeyChecking=no -p "$SRV_PORT" "${SRV_USER}@${SRV_HOST}" \
-        "cat /etc/amnezia/amneziawg/server_private.key 2>/dev/null" || echo "")
+        "cat /etc/amnezia/amneziawg/server_private.key 2>/dev/null" 2>/dev/null || echo "")
     AWG_PUB=""
     if [ -n "$AWG_PRIV" ]; then
         AWG_PUB=$(ssh -o StrictHostKeyChecking=no -p "$SRV_PORT" "${SRV_USER}@${SRV_HOST}" \
-            "echo '${AWG_PRIV}' | awg pubkey 2>/dev/null || echo '${AWG_PRIV}' | wg pubkey" || echo "")
+            "echo '${AWG_PRIV}' | awg pubkey 2>/dev/null || echo '${AWG_PRIV}' | wg pubkey" 2>/dev/null || echo "")
     fi
 
-    sqlite3 "$DB_FILE" "INSERT OR REPLACE INTO servers (name, host, ssh_user, ssh_port, country, cf_tunnel_id, cf_account_tag, hostname_desktop, hostname_mobile, hostname_ssh, awg_private_key, awg_public_key, status, deployed_at) VALUES ('${SRV_NAME}', '${SRV_HOST}', '${SRV_USER}', ${SRV_PORT}, '${SRV_COUNTRY}', '${TUNNEL_ID}', '${CF_ACCOUNT_ID}', '${HOSTNAME_DESKTOP}', '${HOSTNAME_MOBILE}', '${HOSTNAME_SSH}', '${AWG_PRIV}', '${AWG_PUB}', 'active', datetime('now'));"
+    # Записать в БД через Python в Docker-контейнере
+    $DOCKER_COMPOSE exec -T bot python3 -c "
+import sqlite3
+db = sqlite3.connect('/data/vpn.db')
+db.execute('INSERT OR REPLACE INTO servers '
+    '(name,host,ssh_user,ssh_port,country,cf_tunnel_id,cf_account_tag,'
+    'hostname_desktop,hostname_mobile,hostname_ssh,awg_private_key,awg_public_key,'
+    'status,deployed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,\"active\",datetime(\"now\"))',
+    ('${SRV_NAME}','${SRV_HOST}','${SRV_USER}',${SRV_PORT},'${SRV_COUNTRY}',
+     '${TUNNEL_ID}','${CF_ACCOUNT_ID}',
+     '${HOSTNAME_DESKTOP}','${HOSTNAME_MOBILE}','${HOSTNAME_SSH}',
+     '${AWG_PRIV}','${AWG_PUB}'))
+db.commit()
+sid = db.execute('SELECT id FROM servers WHERE name=?', ('${SRV_NAME}',)).fetchone()[0]
+for i in range(2, 255):
+    db.execute('INSERT OR IGNORE INTO ip_pool (server_id,ip,allocated) VALUES (?,?,0)', (sid, f'10.8.0.{i}'))
+db.commit()
+print(f'  OK: ${SRV_NAME} (id={sid}, pool=253)')
+db.close()
+" 2>&1 || print_err "Не удалось добавить ${SRV_NAME} в БД"
 
-    # Заполнить IP-пул
-    SRV_ID=$(sqlite3 "$DB_FILE" "SELECT id FROM servers WHERE name='${SRV_NAME}';")
-    for i in $(seq 2 254); do
-        sqlite3 "$DB_FILE" "INSERT OR IGNORE INTO ip_pool (server_id, ip, allocated) VALUES (${SRV_ID}, '10.8.0.${i}', 0);"
-    done
 done
 
 print_ok "БД инициализирована (${#SERVERS[@]} серверов)"
-
-# 5.5. Запуск Docker
-echo ""
-echo "  Запуск management Docker stack..."
-cd "$SCRIPT_DIR/management"
-$DOCKER_COMPOSE build 2>&1 | tail -3
-$DOCKER_COMPOSE up -d 2>&1
 
 print_ok "Docker stack запущен"
 
